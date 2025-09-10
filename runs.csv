@@ -1,0 +1,5 @@
+size,ctx_len,batch_size,dtype,forward_only,compile,warmup,steps,mean_ms,std_ms
+small,128,4,bfloat16,True,False,5,10,28.76,0.68
+xl,128,4,bfloat16,True,False,5,10,111.93,1.76
+small,128,4,bfloat16,True,False,5,10,28.67,0.18
+small,128,4,bfloat16,False,False,5,10,67.39,0.38

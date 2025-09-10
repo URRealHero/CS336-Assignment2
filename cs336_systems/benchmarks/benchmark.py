@@ -1,4 +1,4 @@
-from cs336_basics.model import BasicsTransformerLM
+import cs336_basics.model as model
 import torch
 import argparse
 import json
@@ -8,6 +8,11 @@ from timeit import default_timer as timer
 import contextlib
 import torch.nn.functional as F
 torch.manual_seed(0)
+
+from annotated_attn import annotated_scaled_dot_product_attention
+model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
+
+BasicsTransformerLM = model.BasicsTransformerLM
 
 MODEL_FACTORY = {
   "small":  (768, 3072, 12, 12),
@@ -27,7 +32,7 @@ def get_args():
     parser.add_argument("--vocab_size", type=int, default=10000, help="Vocabulary size")
     parser.add_argument("--steps", type=int, default=10, help="Number of benchmark steps")
     parser.add_argument("--compile", action="store_true", help="Use torch.compile to compile the model")
-    parser.add_argument("--do-forward-only", action="store_true", help="Only do forward pass")
+    parser.add_argument("--forward_only", action="store_true", help="Only do forward pass")
     parser.add_argument("--outfile", type=str, default=None, help="Output json/csv to save the benchmark results")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use, e.g., 'cuda' or 'cpu'")
     parser.add_argument("--dtype", type=str, choices=["float16","bfloat16","float32"], default="bfloat16", help="Data type to use")
@@ -57,16 +62,21 @@ def rnd_generate_batch(batch_size, ctx_len, vocab_size, device="cuda"):
     return ids, x_in, y_out
 
 def do_forward_step(model, x_in, autocast_ctx):
-    with autocast_ctx():
+    with autocast_ctx:
         logits = model(x_in) # (B, L, V)
+        print(f"Logits Dtype: {logits.dtype}")
     # torch.cuda.synchronize()
     
 def do_train_step(model, x_in, y_out, optimizer, autocast_ctx):
     optimizer.zero_grad()
-    with autocast_ctx():
+    with autocast_ctx:
         logits = model(x_in) # (B, L, V)
+        print(f"Logits Dtype: {logits.dtype}")
         B, L, V = logits.shape
-        loss = F.cross_entropy(logits.view(B*L, V), y_out.view(B*L))
+        loss = F.cross_entropy(logits.reshape(B*L, V), y_out.reshape(B*L))
+        print(f"Loss Dtype: {loss.dtype}")
+    
+    print("Outside before backward:", logits.dtype, loss.dtype)
     
     loss.backward()
     optimizer.step()
@@ -77,7 +87,7 @@ def main():
     args = get_args()
     use_amp = args.dtype in ("bfloat16", "float16")
     amp_type = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
-    autocast_ctx = contextlib.nullcontext if not use_amp else torch.amp.autocast(device_type=args.device, dtype=amp_type)
+    autocast_ctx = contextlib.nullcontext if not use_amp else torch.autocast(device_type=args.device, dtype=amp_type)
     
     # Build model
     model = build_model(args.size, args.vocab_size, args.ctx_len, device=args.device, compile=args.compile)
@@ -89,7 +99,7 @@ def main():
     
     # warmup
     for _ in range(args.warmup):
-        if args.do_forward_only:
+        if args.forward_only:
             do_forward_step(model, x_in, autocast_ctx)
         else:
             do_train_step(model, x_in, y_out, optimizer, autocast_ctx)
@@ -98,7 +108,7 @@ def main():
     for _ in range(args.steps):
         torch.cuda.synchronize()
         start = timer()
-        if args.do_forward_only:
+        if args.forward_only:
             do_forward_step(model, x_in, autocast_ctx)
         else:
             do_train_step(model, x_in, y_out, optimizer, autocast_ctx)
@@ -125,6 +135,11 @@ def main():
             w.writerow(row)
     else:
         print(json.dumps(row, ensure_ascii=False))
+
+    print("Benchmark results:")
+    df = pd.DataFrame([row])
+    print(df.to_string(index=False))
+
         
         
 if __name__ == "__main__":
